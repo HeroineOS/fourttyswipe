@@ -17,7 +17,7 @@ fn main() {
         Ok(b) => b,
         Err(e) => {
             eprintln!(
-                "tty-swipe: failed to open a touchpad/touchscreen input device: {e}"
+                "tty-swipe: failed to open a touchscreen input device: {e}"
             );
             std::process::exit(1);
         }

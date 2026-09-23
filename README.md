@@ -14,7 +14,7 @@ convenient:
    switching *to* a bare shell TTY, or *from* one, can't depend on a
    compositor being present to do the switching.
 2. **It has to work regardless of whether a given session's compositor
-   supports touch input.** `tty-swipe` reads the touchpad/touchscreen
+   supports touch input.** `tty-swipe` reads the touchscreen
    directly via `fourswipe-core`'s raw evdev backend
    (`/dev/input/eventN`), bypassing libinput/X11/Wayland input pipelines
    entirely. A GUI session with no touch support, a plain getty shell, and
@@ -35,7 +35,7 @@ doesn't care what's running on either end of the switch.
 
 - Root (or `CAP_SYS_TTY_CONFIG` + `/dev/input` access) — needed for both
   the VT ioctls and raw evdev reads.
-- A touchpad/touchscreen device that reports `ABS_MT_POSITION_X/Y`.
+- A touchscreen device that reports `ABS_MT_POSITION_X/Y`.
 
 ## Running
 

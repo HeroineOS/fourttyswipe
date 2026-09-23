@@ -5,7 +5,7 @@
 //! active. Switching VTs at this level works the same regardless of what's
 //! running on either end, and regardless of whether that session's
 //! compositor has any concept of touch input at all — tty-swipe reads the
-//! touchpad/touchscreen itself via fourswipe-core's evdev backend and never
+//! touchscreen itself via fourswipe-core's evdev backend and never
 //! goes through a compositor's input pipeline.
 
 use std::fs::{File, OpenOptions};
