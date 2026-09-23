@@ -1,9 +1,15 @@
-//! "Curtain slide" transition: animates the *outgoing* console's captured
-//! frame sliding off-screen, then the real VT switch happens and the
-//! incoming session is revealed live underneath — no capture of the
-//! incoming side is needed. Only meaningful on a plain fbcon VT (see
-//! `fb.rs` for why); on a GUI VT this is a graceful no-op fallback to an
-//! instant switch.
+//! "Slide over" transition: captures the outgoing screen, performs the real
+//! VT switch, briefly waits for the incoming console to settle, captures
+//! it too, then animates a slide between the two static screenshots (the
+//! new one entering from the swipe direction as the old one exits). Once
+//! the animation finishes on the final frame, the real (already-active)
+//! incoming VT is left showing, matching exactly — the animation frame and
+//! the live content are the same content, seamless handoff.
+//!
+//! Only meaningful when both ends are plain fbcon VTs (see `fb.rs`); if
+//! capture fails on either end, this is skipped and the switch already
+//! happened instantly underneath, so there's no user-visible fallback
+//! state to handle here.
 
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -12,38 +18,46 @@ use fourswipe_core::SwipeDirection;
 
 use crate::fb::Framebuffer;
 
-const DURATION: Duration = Duration::from_millis(220);
+const DURATION: Duration = Duration::from_millis(260);
 const TARGET_FPS: u32 = 60;
+/// Give the incoming VT a moment to actually draw before we snapshot it
+/// (a getty/shell repaints near-instantly, but isn't literally synchronous
+/// with the VT_WAITACTIVE ioctl returning).
+const SETTLE_DELAY: Duration = Duration::from_millis(60);
 
-/// Attempts a slide-out animation of the currently displayed console. Best
-/// effort: any failure (no `/dev/fb0`, GUI session holding DRM master,
-/// unexpected geometry) is swallowed and just skips the animation — the
-/// caller still performs the real VT switch either way.
-pub fn slide_out_current_screen(direction: SwipeDirection) {
-    let fb = match Framebuffer::open() {
-        Ok(fb) => fb,
-        Err(_) => return,
-    };
+/// Captures the currently displayed screen, if this is a plain console VT.
+/// Call this *before* switching.
+pub fn capture_outgoing() -> Option<(Framebuffer, Vec<u8>)> {
+    let fb = Framebuffer::open().ok()?;
+    let snapshot = fb.capture().ok()?;
+    Some((fb, snapshot))
+}
 
-    let bytes_per_pixel = (fb.geometry.bits_per_pixel / 8).max(1) as usize;
-    if bytes_per_pixel == 0 || fb.geometry.line_length == 0 || fb.geometry.width == 0 {
-        return;
-    }
+/// Call this *after* the real VT switch has completed. Captures the new
+/// screen (once settled) and animates the slide from `outgoing` to it.
+pub fn slide_in(fb: &Framebuffer, outgoing: &[u8], direction: SwipeDirection) {
+    sleep(SETTLE_DELAY);
 
-    let snapshot = match fb.capture() {
+    let incoming = match fb.capture() {
         Ok(s) => s,
         Err(_) => return,
     };
 
-    let horizontal = matches!(direction, SwipeDirection::Left | SwipeDirection::Right);
+    let bytes_per_pixel = (fb.geometry.bits_per_pixel / 8).max(1) as usize;
     let row_bytes = fb.geometry.line_length as usize;
     let height = fb.geometry.height as usize;
     let width_px = fb.geometry.width as usize;
 
-    if snapshot.len() < row_bytes * height {
-        return; // geometry didn't match what we captured; bail out safely
+    if bytes_per_pixel == 0 || row_bytes == 0 || width_px == 0 {
+        return;
+    }
+    if outgoing.len() != incoming.len() || outgoing.len() < row_bytes * height {
+        // Geometry changed between the two captures (e.g. the incoming VT
+        // is a different resolution) — nothing sane to slide between.
+        return;
     }
 
+    let horizontal = matches!(direction, SwipeDirection::Left | SwipeDirection::Right);
     let start = Instant::now();
     let frame_interval = Duration::from_secs_f64(1.0 / TARGET_FPS as f64);
 
@@ -53,56 +67,59 @@ pub fn slide_out_current_screen(direction: SwipeDirection) {
             break;
         }
         let t = elapsed.as_secs_f64() / DURATION.as_secs_f64();
-        // Ease-out cubic: starts fast, settles smoothly rather than a linear slide.
-        let eased = 1.0 - (1.0 - t).powi(3);
+        let eased = 1.0 - (1.0 - t).powi(3); // ease-out cubic
 
-        let mut frame = vec![0u8; snapshot.len()];
+        let mut frame = vec![0u8; outgoing.len()];
 
         if horizontal {
-            let shift_px = (eased * width_px as f64) as usize;
-            let sign_left = matches!(direction, SwipeDirection::Left);
+            let offset_px = ((eased * width_px as f64) as usize).min(width_px);
+            let offset_bytes = offset_px * bytes_per_pixel;
+            let leaving = matches!(direction, SwipeDirection::Left);
             for row in 0..height {
                 let row_start = row * row_bytes;
-                let src_row = &snapshot[row_start..row_start + row_bytes];
                 let dst_row = &mut frame[row_start..row_start + row_bytes];
-                if shift_px >= width_px {
-                    continue; // fully off-screen, row stays black
-                }
-                let visible_px = width_px - shift_px;
-                let visible_bytes = visible_px * bytes_per_pixel;
-                if sign_left {
-                    // content moves left: visible part is the tail of the row,
-                    // written starting at column 0
-                    let src_off = shift_px * bytes_per_pixel;
-                    dst_row[..visible_bytes].copy_from_slice(&src_row[src_off..src_off + visible_bytes]);
+                let out_row = &outgoing[row_start..row_start + row_bytes];
+                let in_row = &incoming[row_start..row_start + row_bytes];
+
+                if leaving {
+                    // Outgoing exits to the left, incoming enters from the right.
+                    let visible_out = width_px - offset_px;
+                    let visible_out_bytes = visible_out * bytes_per_pixel;
+                    dst_row[..visible_out_bytes]
+                        .copy_from_slice(&out_row[offset_bytes..offset_bytes + visible_out_bytes]);
+                    dst_row[visible_out_bytes..]
+                        .copy_from_slice(&in_row[..row_bytes - visible_out_bytes]);
                 } else {
-                    // content moves right: visible part is the head of the row,
-                    // written starting at the shifted column
-                    let dst_off = shift_px * bytes_per_pixel;
-                    dst_row[dst_off..dst_off + visible_bytes].copy_from_slice(&src_row[..visible_bytes]);
+                    // Outgoing exits to the right, incoming enters from the left.
+                    dst_row[..offset_bytes].copy_from_slice(&in_row[row_bytes - offset_bytes..]);
+                    dst_row[offset_bytes..]
+                        .copy_from_slice(&out_row[..row_bytes - offset_bytes]);
                 }
             }
         } else {
-            let shift_rows = (eased * height as f64) as usize;
-            let sign_up = matches!(direction, SwipeDirection::Up);
-            if shift_rows < height {
-                let visible_rows = height - shift_rows;
-                if sign_up {
-                    let src_off = shift_rows * row_bytes;
-                    frame[..visible_rows * row_bytes]
-                        .copy_from_slice(&snapshot[src_off..src_off + visible_rows * row_bytes]);
-                } else {
-                    let dst_off = shift_rows * row_bytes;
-                    frame[dst_off..dst_off + visible_rows * row_bytes]
-                        .copy_from_slice(&snapshot[..visible_rows * row_bytes]);
-                }
+            let offset_rows = ((eased * height as f64) as usize).min(height);
+            let leaving_up = matches!(direction, SwipeDirection::Up);
+            if leaving_up {
+                let visible_out = height - offset_rows;
+                frame[..visible_out * row_bytes]
+                    .copy_from_slice(&outgoing[offset_rows * row_bytes..]);
+                frame[visible_out * row_bytes..]
+                    .copy_from_slice(&incoming[..offset_rows * row_bytes]);
+            } else {
+                frame[..offset_rows * row_bytes]
+                    .copy_from_slice(&incoming[(height - offset_rows) * row_bytes..]);
+                frame[offset_rows * row_bytes..]
+                    .copy_from_slice(&outgoing[..(height - offset_rows) * row_bytes]);
             }
         }
 
         if fb.blit(&frame).is_err() {
-            return; // e.g. lost the framebuffer mid-animation; abandon cleanly
+            return;
         }
-
         sleep(frame_interval);
     }
+
+    // Leave the real, already-live incoming frame showing (identical to
+    // where the animation ended, so this is a no-op visually).
+    let _ = fb.blit(&incoming);
 }
