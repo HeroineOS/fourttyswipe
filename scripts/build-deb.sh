@@ -5,7 +5,7 @@
 set -e
 
 ARCH="${1:-arm64}"
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 case "$ARCH" in
   arm64) TARGET=aarch64-unknown-linux-gnu ;;

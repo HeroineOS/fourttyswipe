@@ -1,11 +1,13 @@
 [package]
 name = "fourttyswipe"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Four-finger swipe between active TTYs, independent of any compositor/WM/display server"
 repository = "https://github.com/HeroineOS/fourttyswipe"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+drm = "0.15"
 fourswipe-core = { git = "https://github.com/HeroineOS/fourswipe-core", branch = "main" }
 libc = "0.2"
+x11rb = { version = "0.13", features = ["shm"] }

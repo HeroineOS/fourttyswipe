@@ -41,11 +41,6 @@ impl VtSwitcher {
     /// Note: `VT_GETSTATE`'s state bitmask is 16 bits (kernel limitation),
     /// so this only sees VTs 1-15. Fine for the default 6-getty setup most
     /// distros ship; a wider scheme would need per-VT `/dev/ttyN` probing.
-    /// Currently active VT number.
-    pub fn active_vt(&self) -> io::Result<u16> {
-        Ok(self.state()?.0)
-    }
-
     fn state(&self) -> io::Result<(u16, Vec<u16>)> {
         let mut stat = VtStat::default();
         let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), VT_GETSTATE, &mut stat as *mut VtStat) };
@@ -56,30 +51,41 @@ impl VtSwitcher {
         Ok((stat.v_active, allocated))
     }
 
-    fn activate(&self, vt: u16) -> io::Result<()> {
-        let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), VT_ACTIVATE, vt as libc::c_ulong) };
-        if ret != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), VT_WAITACTIVE, vt as libc::c_ulong) };
-        if ret != 0 {
+    pub fn active_vt(&self) -> io::Result<u16> {
+        Ok(self.state()?.0)
+    }
+
+    /// Asks the kernel to switch to `vt` without waiting for it to finish
+    /// (a GUI session on the current VT has to release it first).
+    pub fn request(&self, vt: u16) -> io::Result<()> {
+        if unsafe { libc::ioctl(self.fd.as_raw_fd(), VT_ACTIVATE, vt as libc::c_ulong) } != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
     }
 
-    /// Switches to the next (or previous) allocated VT, wrapping around.
-    /// Returns the VT that's now active.
-    pub fn switch(&self, forward: bool) -> io::Result<u16> {
+    pub fn wait_active(&self, vt: u16) -> io::Result<()> {
+        if unsafe { libc::ioctl(self.fd.as_raw_fd(), VT_WAITACTIVE, vt as libc::c_ulong) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Switches to `vt` and blocks until the kernel reports it active.
+    pub fn activate(&self, vt: u16) -> io::Result<()> {
+        self.request(vt)?;
+        self.wait_active(vt)
+    }
+
+    /// Returns (current VT, next or previous allocated VT, wrapping around).
+    pub fn targets(&self, forward: bool) -> io::Result<(u16, u16)> {
         let (active, allocated) = self.state()?;
         if allocated.is_empty() {
-            return Ok(active);
+            return Ok((active, active));
         }
         let pos = allocated.iter().position(|&v| v == active).unwrap_or(0);
         let len = allocated.len();
         let next_pos = if forward { (pos + 1) % len } else { (pos + len - 1) % len };
-        let target = allocated[next_pos];
-        self.activate(target)?;
-        Ok(target)
+        Ok((active, allocated[next_pos]))
     }
 }

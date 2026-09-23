@@ -1,24 +1,18 @@
-//! Direct `/dev/fb0` access for the transition animation.
-//!
-//! Scope/limitation, read before touching this: this only works for a VT
-//! that's a plain text console (fbcon) with no GPU compositor holding DRM
-//! master over it. An active Xorg or Wayland (HeroiWM) session normally
-//! takes DRM master and the fbdev-emulation layer goes inactive while it
-//! does, so writes here are a no-op (harmless, just doesn't animate) on
-//! those VTs. Capturing a *GUI* session's real content needs a
-//! session-specific mechanism instead — X's composite extension, or a
-//! Wayland screencopy protocol implemented in HeroiWM — and is future work,
-//! not something a generic fbdev capture can portably do.
+//! Read-only `/dev/fb0` capture of the text console. Nothing here ever
+//! writes to the framebuffer: all drawing goes through our own KMS
+//! buffers (`kms.rs`), so fbcon's content can't be corrupted.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::io::AsRawFd;
+
+use crate::snapshot::{PixFmt, Snapshot};
 
 const FBIOGET_VSCREENINFO: libc::c_ulong = 0x4600;
 const FBIOGET_FSCREENINFO: libc::c_ulong = 0x4602;
 
-// Layout matches the stable Linux UAPI in <linux/fb.h>. `unsigned long`
-// fields are 8 bytes on both our LP64 targets (aarch64, x86_64).
+// Matches the stable UAPI in <linux/fb.h>; `unsigned long` is 8 bytes on
+// the LP64 targets we ship (aarch64, x86_64).
 #[repr(C)]
 #[derive(Default)]
 struct FbBitfield {
@@ -80,105 +74,76 @@ struct FbFixScreeninfo {
     reserved: [u16; 2],
 }
 
-impl Default for FbFixScreeninfo {
-    fn default() -> Self {
-        // SAFETY: an all-zero fb_fix_screeninfo is a valid bit pattern
-        // (plain-old-data C struct, no padding/alignment requirements
-        // beyond u64/u32/u16/u8 fields).
-        unsafe { std::mem::zeroed() }
+struct Info {
+    var: FbVarScreeninfo,
+    fix: FbFixScreeninfo,
+}
+
+fn query(fd: i32) -> io::Result<Info> {
+    let mut var = FbVarScreeninfo::default();
+    if unsafe { libc::ioctl(fd, FBIOGET_VSCREENINFO, &mut var) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: plain-old-data C struct, all-zero is a valid value.
+    let mut fix: FbFixScreeninfo = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(fd, FBIOGET_FSCREENINFO, &mut fix) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Info { var, fix })
+}
+
+fn pixfmt(var: &FbVarScreeninfo) -> Option<PixFmt> {
+    match var.bits_per_pixel {
+        32 if var.red.offset == 16 && var.green.offset == 8 && var.blue.offset == 0 => {
+            Some(PixFmt::Xrgb8888)
+        }
+        16 if var.red.offset == 11 && var.green.offset == 5 && var.blue.offset == 0 => {
+            Some(PixFmt::Rgb565)
+        }
+        _ => None,
     }
 }
 
-pub struct Geometry {
-    pub width: u32,
-    pub height: u32,
-    pub bits_per_pixel: u32,
-    /// Bytes per scanline row (may exceed `width * bytes_per_pixel` due to
-    /// hardware padding — always index rows by this, not a computed stride).
-    pub line_length: u32,
-    pub smem_len: u32,
+fn unsupported() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "unsupported fbdev pixel format")
 }
 
-pub struct Framebuffer {
-    file: File,
-    pub geometry: Geometry,
+pub fn format() -> io::Result<PixFmt> {
+    let file = OpenOptions::new().read(true).open("/dev/fb0")?;
+    let info = query(file.as_raw_fd())?;
+    pixfmt(&info.var).ok_or_else(unsupported)
 }
 
-impl Framebuffer {
-    pub fn open() -> io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open("/dev/fb0")?;
+/// Snapshots the visible area of the text console.
+pub fn capture() -> io::Result<Snapshot> {
+    let file = OpenOptions::new().read(true).open("/dev/fb0")?;
+    let fd = file.as_raw_fd();
+    let Info { var, fix } = query(fd)?;
+    let fmt = pixfmt(&var).ok_or_else(unsupported)?;
 
-        let mut var = FbVarScreeninfo::default();
-        let ret = unsafe { libc::ioctl(file.as_raw_fd(), FBIOGET_VSCREENINFO, &mut var) };
-        if ret != 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut fix = FbFixScreeninfo::default();
-        let ret = unsafe { libc::ioctl(file.as_raw_fd(), FBIOGET_FSCREENINFO, &mut fix) };
-        if ret != 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(Self {
-            file,
-            geometry: Geometry {
-                width: var.xres,
-                height: var.yres,
-                bits_per_pixel: var.bits_per_pixel,
-                line_length: fix.line_length,
-                smem_len: fix.smem_len,
-            },
-        })
+    let bpp = fmt.bytes_per_pixel();
+    let (w, h) = (var.xres as usize, var.yres as usize);
+    let pitch = fix.line_length as usize;
+    let origin = var.yoffset as usize * pitch + var.xoffset as usize * bpp;
+    let len = fix.smem_len as usize;
+    if w == 0 || h == 0 || origin + (h - 1) * pitch + w * bpp > len {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad fbdev geometry"));
     }
 
-    fn mmap(&self) -> io::Result<*mut u8> {
-        let len = self.geometry.smem_len as usize;
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                self.file.as_raw_fd(),
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(ptr as *mut u8)
+    let ptr = unsafe {
+        libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_SHARED, fd, 0)
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
     }
+    let mem = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    let row = w * bpp;
+    let mut data = Vec::with_capacity(row * h);
+    for y in 0..h {
+        let start = origin + y * pitch;
+        data.extend_from_slice(&mem[start..start + row]);
+    }
+    unsafe { libc::munmap(ptr, len) };
 
-    /// Snapshots the current screen contents. Returns raw pixel bytes in
-    /// whatever native format the console is using (typically RGB565 or
-    /// XRGB8888 — we don't reinterpret it, just capture/replay verbatim).
-    pub fn capture(&self) -> io::Result<Vec<u8>> {
-        let len = self.geometry.smem_len as usize;
-        let ptr = self.mmap()?;
-        let snapshot = unsafe { std::slice::from_raw_parts(ptr, len).to_vec() };
-        unsafe {
-            libc::munmap(ptr as *mut _, len);
-        }
-        Ok(snapshot)
-    }
-
-    /// Writes a full frame buffer back to the screen. `frame` must be
-    /// exactly `geometry.smem_len` bytes, laid out the same as `capture()`
-    /// returned it.
-    pub fn blit(&self, frame: &[u8]) -> io::Result<()> {
-        let len = self.geometry.smem_len as usize;
-        if frame.len() != len {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "frame size does not match framebuffer size",
-            ));
-        }
-        let ptr = self.mmap()?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(frame.as_ptr(), ptr, len);
-            libc::munmap(ptr as *mut _, len);
-        }
-        Ok(())
-    }
+    Ok(Snapshot { width: w as u32, height: h as u32, fmt, data })
 }
