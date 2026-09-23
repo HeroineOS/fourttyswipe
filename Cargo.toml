@@ -1,0 +1,11 @@
+[package]
+name = "tty-swipe"
+version = "0.1.0"
+edition = "2021"
+description = "Four-finger swipe between active TTYs, independent of any compositor/WM/display server"
+repository = "https://github.com/HeroineOS/tty-swipe"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+fourswipe-core = { git = "https://github.com/HeroineOS/fourswipe-core", branch = "main" }
+libc = "0.2"
