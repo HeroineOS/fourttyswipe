@@ -1,6 +1,6 @@
 [package]
 name = "tty-swipe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Four-finger swipe between active TTYs, independent of any compositor/WM/display server"
 repository = "https://github.com/HeroineOS/tty-swipe"

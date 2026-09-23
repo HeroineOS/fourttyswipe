@@ -1,3 +1,5 @@
+mod fb;
+mod transition;
 mod vt;
 
 use fourswipe_core::backend::evdev_backend::EvdevBackend;
@@ -44,6 +46,10 @@ fn main() {
         };
 
         if let GestureEvent::Recognized { finger_count: 4, direction } = gesture {
+            // Best-effort: animates a slide-out on plain console VTs, silently
+            // skipped on a GUI VT holding DRM master (see fb.rs/transition.rs).
+            transition::slide_out_current_screen(direction);
+
             let forward = matches!(direction, SwipeDirection::Left);
             match switcher.switch(forward) {
                 Ok(active_vt) => println!("tty-swipe: switched to VT{active_vt}"),
