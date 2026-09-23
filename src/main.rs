@@ -6,8 +6,9 @@ mod transition;
 mod vt;
 mod xcapture;
 
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
+use std::time::Duration;
 
 use fourswipe_core::backend::evdev_backend::EvdevBackend;
 use fourswipe_core::backend::InputBackend;
@@ -52,11 +53,16 @@ fn main() {
     // One worker runs transitions strictly one at a time, so a quick second
     // swipe queues behind the first instead of drawing over it. Input keeps
     // being read on this thread the whole time.
-    let (tx, rx) = mpsc::channel::<SwipeDirection>();
+    let (tx, rx) = mpsc::channel::<Msg>();
     thread::spawn(move || {
         let mut transitioner = Transitioner::new(switcher);
-        for direction in rx {
-            transitioner.swipe(direction);
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Prepare) => transitioner.prepare(),
+                Ok(Msg::Swipe(direction)) => transitioner.swipe(direction),
+                Err(RecvTimeoutError::Timeout) => transitioner.idle(),
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
         }
     });
 
@@ -75,16 +81,25 @@ fn main() {
             }
         };
 
-        let Some(GestureEvent::Recognized { finger_count: 4, direction }) = detector.feed(event) else {
-            continue;
-        };
-
-        // Discard the rest of this physical swipe (lift-off, jitter) so it
-        // can't be read as the start of another gesture.
-        detector.cancel();
-
-        if matches!(direction, SwipeDirection::Left | SwipeDirection::Right) {
-            let _ = tx.send(direction);
+        match detector.feed(event) {
+            // Four fingers down: capture the screen and ready the buffers
+            // while the user is still swiping.
+            Some(GestureEvent::Start { finger_count: 4 }) => {
+                let _ = tx.send(Msg::Prepare);
+            }
+            Some(GestureEvent::Recognized { finger_count: 4, direction }) => {
+                // Ignore the rest of this physical touch.
+                detector.cancel();
+                if matches!(direction, SwipeDirection::Left | SwipeDirection::Right) {
+                    let _ = tx.send(Msg::Swipe(direction));
+                }
+            }
+            _ => {}
         }
     }
+}
+
+enum Msg {
+    Prepare,
+    Swipe(SwipeDirection),
 }

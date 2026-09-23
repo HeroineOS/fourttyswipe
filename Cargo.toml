@@ -1,6 +1,6 @@
 [package]
 name = "fourttyswipe"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Four-finger swipe between active TTYs, independent of any compositor/WM/display server"
 repository = "https://github.com/HeroineOS/fourttyswipe"

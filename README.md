@@ -39,15 +39,28 @@ vblank-synced page flips; fbcon's and the GUI's buffers are never written
 to. The display is handed back to the real owner of the target VT on a
 frame that matches what it's about to show.
 
+Screens are captured when four fingers touch down, while you're still
+swiping, and every VT's last image is cached. That means the slide can
+start the moment the swipe is recognized.
+
 | From → to | Outgoing image | Incoming image |
 |---|---|---|
-| tty → tty | fbdev | fbdev, captured after the switch while our frozen frame hides it |
-| tty → X | fbdev | live X11 screenshot, or the last one taken if a backgrounded X server won't provide it |
-| X → tty | X11 screenshot | last capture of that tty (so nothing flashes); first visit to a tty may flash one frame |
-| X → X | — | not animated |
+| tty → tty | fbdev | cached image of that tty, or captured after the switch while our frozen frame hides it |
+| tty → GUI | fbdev | cached image from the last time you left that GUI; X can also be asked directly |
+| GUI → tty | the GUI's frame, read from the display (DRM), falling back to X11 for X | cached image of that tty (no flash); a tty not seen yet may flash one frame |
+| GUI → GUI | — | not animated |
 
-Wayland sessions aren't captured yet (needs a screencopy protocol in
-HeroiWM), so switches involving them are instant.
+"GUI" is any X or Wayland session. The frame is read straight from the
+display, so no compositor permissions or protocols are needed. This only
+works if the buffer is linear. GPU-tiled or compressed buffers can't be
+read by the CPU, and the journal says so when that happens.
+
+When switching into a GUI, the last animation frame stays on screen
+until the GUI shows its own frame, instead of going black while it
+resumes.
+
+The two animation buffers (2 × screen size in memory) are kept between
+swipes and freed after 30 seconds idle.
 
 ## Requirements
 
@@ -75,7 +88,8 @@ sudo systemctl enable --now fourttyswipe
 
 ## Troubleshooting
 
-When a switch isn't animated, the reason is logged:
+Each switch logs its timing (total time, frames, late frames, worst
+frame), and a switch that isn't animated logs why:
 
 ```
 journalctl -u fourttyswipe -f
