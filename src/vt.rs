@@ -41,6 +41,11 @@ impl VtSwitcher {
     /// Note: `VT_GETSTATE`'s state bitmask is 16 bits (kernel limitation),
     /// so this only sees VTs 1-15. Fine for the default 6-getty setup most
     /// distros ship; a wider scheme would need per-VT `/dev/ttyN` probing.
+    /// Currently active VT number.
+    pub fn active_vt(&self) -> io::Result<u16> {
+        Ok(self.state()?.0)
+    }
+
     fn state(&self) -> io::Result<(u16, Vec<u16>)> {
         let mut stat = VtStat::default();
         let ret = unsafe { libc::ioctl(self.fd.as_raw_fd(), VT_GETSTATE, &mut stat as *mut VtStat) };

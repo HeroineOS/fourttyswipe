@@ -1,12 +1,12 @@
 [Unit]
-Description=tty-swipe: four-finger swipe between TTYs
+Description=fourttyswipe: four-finger swipe between TTYs
 # Deliberately not tied to graphical.target/any display manager — this must
 # run whether the active VT is a bare shell, X11, or a Wayland compositor.
 After=systemd-udevd.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tty-swipe
+ExecStart=/usr/bin/fourttyswipe
 Restart=on-failure
 # Needs root for /dev/tty0 VT ioctls and raw /dev/input/eventN access.
 User=root

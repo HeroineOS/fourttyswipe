@@ -1,4 +1,4 @@
-# tty-swipe
+# fourttyswipe
 
 Four-finger swipe between active TTYs — no keybind held, just the gesture.
 Part of [HeroineOS](https://github.com/HeroineOS)'s
@@ -6,7 +6,7 @@ Part of [HeroineOS](https://github.com/HeroineOS)'s
 
 ## Why this is separate from the compositor
 
-`tty-swipe` runs as its own root-level system service, entirely outside
+`fourttyswipe` runs as its own root-level system service, entirely outside
 HeroiWM (or any compositor/WM). Two reasons that's required, not just
 convenient:
 
@@ -14,7 +14,7 @@ convenient:
    switching *to* a bare shell TTY, or *from* one, can't depend on a
    compositor being present to do the switching.
 2. **It has to work regardless of whether a given session's compositor
-   supports touch input.** `tty-swipe` reads the touchscreen
+   supports touch input.** `fourttyswipe` reads the touchscreen
    directly via `fourswipe-core`'s raw evdev backend
    (`/dev/input/eventN`), bypassing libinput/X11/Wayland input pipelines
    entirely. A GUI session with no touch support, a plain getty shell, and
@@ -41,16 +41,16 @@ doesn't care what's running on either end of the switch.
 
 ```
 cargo build --release
-sudo ./target/release/tty-swipe
+sudo ./target/release/fourttyswipe
 ```
 
-Or install `tty-swipe.service` for it to run system-wide, independent of
+Or install `fourttyswipe.service` for it to run system-wide, independent of
 any login session:
 
 ```
-sudo cp target/release/tty-swipe /usr/bin/tty-swipe
-sudo cp tty-swipe.service /etc/systemd/system/
-sudo systemctl enable --now tty-swipe
+sudo cp target/release/fourttyswipe /usr/bin/fourttyswipe
+sudo cp fourttyswipe.service /etc/systemd/system/
+sudo systemctl enable --now fourttyswipe
 ```
 
 ## Status
